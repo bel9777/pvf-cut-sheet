@@ -8,6 +8,7 @@
   var todayIso = M.todayNY();
   var params = new URLSearchParams(location.search);
   var addressReserved = false; // the address said the buyer has already reserved (a link from the deposit email)
+  var addressSide = false;     // the address also said half or whole
 
   var STEPS = [
     { id: "start", label: "Your hog" },
@@ -51,7 +52,7 @@
   /* What the address can set: the size, whether the buyer has reserved (reserved=1 or reserved=yes, or a deposit order
      number, which means the same thing) and, only when they have not, an open processing date. */
   function applyParams() {
-    if (params.get("side") === "whole" || params.get("side") === "half") state.side = params.get("side");
+    if (params.get("side") === "whole" || params.get("side") === "half") { state.side = params.get("side"); addressSide = true; }
     var rp = String(params.get("reserved") || "").toLowerCase();
     if (rp === "1" || rp === "yes") { setReserved("yes"); addressReserved = true; }
     if (params.get("order")) { state.order = String(params.get("order")).slice(0, C.limits.order); setReserved("yes"); addressReserved = true; }
@@ -90,7 +91,9 @@
       }
     }
     /* A buyer coming from the deposit email has nothing to say on the first screen. */
-    if (addressReserved && state.reserved === "yes" && state.step === "start") state.step = "preset";
+    /* Only when the address also named the size. The after-deposit email cannot tell a half from a whole, so its link
+       says reserved and nothing else: the buyer sees the first screen with "Yes" already chosen and picks the size. */
+    if (addressReserved && addressSide && state.reserved === "yes" && state.step === "start") state.step = "preset";
   }
 
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
