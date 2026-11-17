@@ -26,6 +26,9 @@
   text-align: left;
 }
 #pvf-cut-sheet *, #pvf-cut-sheet *::before, #pvf-cut-sheet *::after { box-sizing: border-box; }
+/* The farm's store theme makes every <label> bold. Inside the builder a label is plain weight; the parts that are meant
+   to be bold (an option's name, a field's caption, a price) set their own 600 or 700 below. */
+#pvf-cut-sheet label { font-weight: 400; }
 #pvf-cut-sheet [hidden] { display: none !important; }
 body.cs-standalone { margin: 0; background: var(--paper, #F7F4EC); }
 
@@ -112,6 +115,10 @@ fieldset.cs-block { border: 1px solid var(--line); }
 .cs-btn--primary:hover { background: #000; }
 .cs-btn--ghost { border-color: transparent; background: transparent; color: var(--muted); text-decoration: underline; padding-left: 4px; padding-right: 4px; }
 .cs-btn[disabled] { opacity: .55; cursor: wait; }
+.cs-btn--block { display: flex; width: 100%; margin-top: 16px; }
+/* Under the one big Send button: Back on the left, Copy a link on the right, as plain text links. */
+.cs-linkrow { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 4px; }
+.cs-linkrow .cs-link { min-height: 44px; padding: 0 2px; font-weight: 400; }
 .cs-nav { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
 .cs-nav__right { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
 

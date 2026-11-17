@@ -7,6 +7,7 @@
   var STORE_KEY = "pvf-cut-sheet-v1";
   var todayIso = M.todayNY();
   var params = new URLSearchParams(location.search);
+  var addressReserved = false; // the address said the buyer has already reserved (a link from the deposit email)
 
   var STEPS = [
     { id: "start", label: "Your hog" },
@@ -30,7 +31,7 @@
     return {
       step: "start", side: "half", batch: "", preset: "standard", cure: "natural", answers: M.applyPreset("standard"),
       extras: { fat: false, bones: false, organs: [] }, instructions: "", name: "", email: "", phone: "",
-      order: "", delivery: "", visited: {}, sent: null, noteRefused: false, submission: null
+      order: "", delivery: "", reserved: "", visited: {}, sent: null, noteRefused: false, submission: null
     };
   }
   var state = freshState(), hadDraft = false;
@@ -39,15 +40,23 @@
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify({ step: state.step === "done" ? "review" : state.step, side: state.side, batch: state.batch, preset: state.preset, cure: state.cure,
         answers: state.answers, extras: state.extras, instructions: state.instructions, name: state.name, email: state.email,
-        phone: state.phone, order: state.order, delivery: state.delivery, visited: state.visited, submission: state.submission }));
+        phone: state.phone, order: state.order, delivery: state.delivery, reserved: state.reserved, visited: state.visited, submission: state.submission }));
     } catch (e) { /* private window */ }
   }
-  /* What the address can set: the size, the deposit order number and an open processing date. */
+  /* A buyer who has reserved has no date of their own: the deposit holds it. Whenever the answer becomes yes, any date goes. */
+  function setReserved(v) {
+    state.reserved = v === "yes" || v === "no" ? v : "";
+    if (state.reserved === "yes") state.batch = "";
+  }
+  /* What the address can set: the size, whether the buyer has reserved (reserved=1 or reserved=yes, or a deposit order
+     number, which means the same thing) and, only when they have not, an open processing date. */
   function applyParams() {
     if (params.get("side") === "whole" || params.get("side") === "half") state.side = params.get("side");
-    if (params.get("order")) state.order = String(params.get("order")).slice(0, C.limits.order);
+    var rp = String(params.get("reserved") || "").toLowerCase();
+    if (rp === "1" || rp === "yes") { setReserved("yes"); addressReserved = true; }
+    if (params.get("order")) { state.order = String(params.get("order")).slice(0, C.limits.order); setReserved("yes"); addressReserved = true; }
     var pb = M.batch(params.get("batch") || "");
-    if (pb && M.batchOpen(pb, todayIso)) state.batch = pb.id;
+    if (pb && M.batchOpen(pb, todayIso) && state.reserved !== "yes") state.batch = pb.id;
   }
   function restore() {
     try {
@@ -57,6 +66,7 @@
     state.extras = M.cleanExtras(state.extras);
     state.instructions = M.cleanNote(state.instructions);
     state.order = String(state.order == null ? "" : state.order).slice(0, C.limits.order);
+    setReserved(state.reserved);
     state.name = String(state.name == null ? "" : state.name).slice(0, C.limits.name);
     if (M.PRESETS.map(function (p) { return p.id; }).indexOf(state.preset) < 0) state.preset = "custom";
     if (M.DELIVERY.indexOf(state.delivery) < 0) state.delivery = "";
@@ -70,12 +80,17 @@
       if (shared) {
         var r = M.applyShare(state, shared);
         if (!M.batch(r.batch)) r.batch = state.batch;
+        /* The link says true or false; a link that does not say hands back the draft's own yes, no or empty. */
+        r.reserved = r.reserved === true ? "yes" : r.reserved === false ? "no" : r.reserved === "yes" || r.reserved === "no" ? r.reserved : "";
         Object.keys(r).forEach(function (k) { state[k] = r[k]; });
+        setReserved(state.reserved);
         state.cure = r.answers.smoke_style === "regular" ? "regular" : "natural";
         if (M.PRESETS.map(function (p) { return p.id; }).indexOf(state.preset) < 0) state.preset = "custom";
         state.step = "review";
       }
     }
+    /* A buyer coming from the deposit email has nothing to say on the first screen. */
+    if (addressReserved && state.reserved === "yes" && state.step === "start") state.step = "preset";
   }
 
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
@@ -90,7 +105,20 @@
     return x;
   }
   function renorm() { state.answers = M.normalize(priced(), state.side); }
-  function fitState() { return { side: state.side, batch: state.batch, answers: state.answers, extras: state.extras, instructions: state.instructions, order: state.order }; }
+  function isReserved() { return state.reserved === "yes"; }
+  /* The state the model checks and writes from. A reserved sheet has no date of its own. */
+  function modelState() {
+    return { side: state.side, batch: isReserved() ? "" : state.batch, reserved: isReserved(), answers: state.answers, extras: state.extras,
+      instructions: state.instructions, order: state.order };
+  }
+  function fitState() { return modelState(); }
+  function anyOpen() { return C.batches.some(function (x) { return M.batchOpen(x, todayIso); }); }
+  /* May the sheet be sent today? Reserved: while any processing date is still open. Not yet: its own date must be open. */
+  function sendable() {
+    if (state.reserved === "yes") return anyOpen();
+    if (state.reserved === "no") { var sb = M.batch(state.batch); return !!(sb && M.batchOpen(sb, todayIso)); }
+    return false;
+  }
   /* Does the note fit Timberline's box? The review also counts a note the receiver has refused. */
   function reviewFits() { return !state.noteRefused && M.noteFits(fitState()); }
   /* Keeps the note warnings and the Send button honest while someone types, without drawing the page again. */
@@ -98,7 +126,7 @@
     var fits = M.noteFits(fitState()), live = document.getElementById("cs-notefit"), long = document.getElementById("cs-notelong"), send = document.getElementById("cs-send");
     if (live) { live.textContent = fits ? "" : NOTE_WONT_FIT; live.hidden = fits; }
     if (long) long.hidden = reviewFits();
-    if (send) { var sb = M.batch(state.batch); send.disabled = !(sb && M.batchOpen(sb, todayIso) && reviewFits()); }
+    if (send) send.disabled = !(sendable() && reviewFits());
   }
   /* Starts over: the saved draft is cleared and the page goes back to its first screen. The address keeps its say. */
   function startNew() {
@@ -238,14 +266,22 @@
     function sideCard(id, name) {
       var e = M.estimate(M.defaults(), id);
       return '<label class="cs-opt"><input type="radio" name="side" value="' + id + '"' + (state.side === id ? " checked" : "") + '>' +
-        '<span class="cs-opt__box"><span class="cs-opt__label">' + name + '</span><span class="cs-opt__desc">About ' + e.takeHome + " lb of pork.<br>$" +
-        C.standardRate[id].toFixed(2) + "/lb hanging weight on the standard sheet, about " + money(Math.round(C.standardRate[id] * C.typicalHanging[id])) + ".<br>" +
+        '<span class="cs-opt__box"><span class="cs-opt__label">' + name + '</span><span class="cs-opt__desc">About ' + e.takeHome + " lb of pork.<br>Starting at $" +
+        C.freshRate[id].toFixed(2) + "/lb hanging weight, butcher included.<br>" +
         (id === "whole" ? "Two sausage choices, one for each half." : "One sausage choice.") + "</span></span></label>";
     }
-    return '<div class="cs-step"><h2 class="cs-steptitle">First, your hog</h2><p class="cs-stepintro">You don&rsquo;t need to have put your deposit down yet. Try it, then decide.</p>' +
+    function reservedCard(v, label, desc) {
+      return '<label class="cs-opt"><input type="radio" name="reserved" value="' + v + '"' + (state.reserved === v ? " checked" : "") + '>' +
+        '<span class="cs-opt__box"><span class="cs-opt__label">' + esc(label) + '</span><span class="cs-opt__desc">' + esc(desc) + "</span></span></label>";
+    }
+    return '<div class="cs-step"><h2 class="cs-steptitle">First, your hog</h2><p class="cs-stepintro">Reserved or just looking, start here.</p>' +
       (hadDraft ? '<p class="cs-note">Picking up where you left off. <button type="button" class="cs-link" id="cs-newsheet">Start a new sheet</button></p>' : "") +
       '<fieldset class="cs-block"><legend>How much?</legend><div class="cs-opts">' + sideCard("half", "Half hog") + sideCard("whole", "Whole hog") + "</div></fieldset>" +
-      '<fieldset class="cs-block"><legend>Which processing date?</legend><div class="cs-opts cs-opts--compact">' + bs + "</div></fieldset>" +
+      '<fieldset class="cs-block"><legend>Have you reserved yet?</legend><div class="cs-opts cs-opts--two">' +
+      reservedCard("yes", "Yes, my deposit is down", "We use the processing date you picked at checkout. Nothing to pick here.") +
+      reservedCard("no", "Not yet", "Pick a date below to see your deadlines. " + money(C.deposit[state.side]) + " holds a " + (state.side === "whole" ? "whole hog." : "half.")) +
+      "</div></fieldset>" +
+      (state.reserved === "no" ? '<fieldset class="cs-block"><legend>Which processing date?</legend><div class="cs-opts cs-opts--compact">' + bs + "</div></fieldset>" : "") +
       timingHtml() +
       navHtml(null, "preset", "Next") + "</div>";
   }
@@ -300,36 +336,49 @@
     return "The cut sheets for " + esc(M.longDate(b.processing)) + " closed on " + esc(M.longDate(b.due)) + ". " + esc(M.closedLine()) + " " +
       "Pick another date, or call or text Brian at " + esc(C.phone) + ".";
   }
+  function allClosedMessage() {
+    return "Every processing date has closed. " + M.closedLine() + " Call or text Brian at " + C.phone + ".";
+  }
   function viewReview() {
-    var e = M.estimate(priced(), state.side), b = M.batch(state.batch);
+    var e = M.estimate(priced(), state.side), res = isReserved(), b = res ? null : M.batch(state.batch);
     var data = summaryRows();
     if (!data.some(function (r) { return r.key === "Extras" || r.key === "Note"; })) data.push({ step: "extras", key: "Extras", val: "None" });
     var rows = data.map(function (r) {
       return '<div class="cs-review__row"><span class="cs-review__key">' + esc(r.key) + '</span><span class="cs-review__val">' + esc(r.val) + ' <button type="button" class="cs-link" data-go="' + r.step + '" aria-label="Change ' + esc(r.key) + '">change</button></span></div>';
     }).join("");
-    var closed = !!b && !M.batchOpen(b, todayIso), ok = !!b && !closed, fits = reviewFits();
-    var dateMsg = closed ? '<span class="cs-err">' + closedMessage(b) + ' <button type="button" class="cs-link" data-go="start">Choose one</button></span>' :
-      b ? ", processing " + esc(M.longDate(b.processing)) + ". Cut sheet due " + esc(M.longDate(b.due)) + "." :
-      '<span class="cs-err">Pick a processing date. <button type="button" class="cs-link" data-go="start">Choose one</button></span>';
-    return '<div class="cs-step"><h2 class="cs-steptitle">Your cut sheet</h2><p class="cs-stepintro">' + (state.side === "whole" ? "Whole hog" : "Half hog") + (ok ? "" : ". ") + dateMsg + "</p>" +
+    var fits = reviewFits(), ok = sendable(), kind = state.side === "whole" ? "Whole hog" : "Half hog";
+    var choose = ' <button type="button" class="cs-link" data-go="start">Choose one</button></span>';
+    var intro;
+    if (res) {
+      intro = anyOpen() ? ". " + esc("Your processing date is the one on your deposit, and your cut sheet is due " + M.DUE_RULE.replace("your processing date", "it") + ".") :
+        ". " + '<span class="cs-err">' + esc(allClosedMessage()) + "</span>";
+    } else if (state.reserved === "no") {
+      var closed = !!b && !M.batchOpen(b, todayIso);
+      intro = closed ? ". " + '<span class="cs-err">' + closedMessage(b) + choose :
+        b ? ", processing " + esc(M.longDate(b.processing)) + ". Cut sheet due " + esc(M.longDate(b.due)) + "." :
+        ". " + '<span class="cs-err">Pick a processing date.' + choose;
+    } else {
+      intro = ". " + '<span class="cs-err">Tell us whether you have reserved.' + choose;
+    }
+    return '<div class="cs-step"><h2 class="cs-steptitle">Your cut sheet</h2><p class="cs-stepintro">' + kind + intro + "</p>" +
       '<div class="cs-block"><div class="cs-review">' + rows + "</div></div>" +
       '<p class="cs-err" id="cs-notelong"' + (fits ? " hidden" : "") + ">" + esc(NOTE_LONG + " ") + '<button type="button" class="cs-link" data-go="extras">Shorten it</button></p>' +
-      '<form class="cs-block" id="cs-form" novalidate><p class="cs-blocktitle">Your details</p><p class="cs-note">We email you a copy of your cut sheet and your estimate.</p><div class="cs-clear"></div><p id="cs-formerr" class="cs-err" hidden></p>' +
+      '<form class="cs-block" id="cs-form" novalidate><p class="cs-blocktitle">Your details</p><p class="cs-note">We email you a copy of your cut sheet and your estimate.</p>' +
+      (state.order ? '<p class="cs-note" id="cs-orderline">For deposit order ' + esc(state.order) + ".</p>" : "") + '<div class="cs-clear"></div><p id="cs-formerr" class="cs-err" hidden></p>' +
       '<div class="cs-fields2"><label class="cs-field"><span>Your name</span><input name="name" autocomplete="name" maxlength="' + C.limits.name + '" required value="' + esc(state.name) + '"></label>' +
       '<label class="cs-field"><span>Phone</span><input name="phone" type="tel" autocomplete="tel" maxlength="40" required value="' + esc(state.phone) + '"></label></div>' +
-      '<div class="cs-fields2"><label class="cs-field"><span>Email</span><input name="email" type="email" autocomplete="email" maxlength="254" required value="' + esc(state.email) + '"></label>' +
-      '<label class="cs-field"><span>Deposit order number</span><input name="order" maxlength="' + C.limits.order + '" value="' + esc(state.order) + '"><small>It&rsquo;s on your deposit email. Leave it blank if you haven&rsquo;t reserved yet.</small></label></div>' +
+      '<label class="cs-field"><span>Email</span><input name="email" type="email" autocomplete="email" maxlength="254" required value="' + esc(state.email) + '">' +
+      (res ? "<small>Use the email on your farm store account. That is how we find your deposit.</small>" : "") + "</label>" +
       '<p class="cs-blocktitle cs-blocktitle--gap">Delivery or pickup</p><div class="cs-clear"></div>' +
       '<label class="cs-field"><span>How do you want to get your pork?</span><select name="delivery">' +
       '<option value=""' + (state.delivery ? "" : " selected") + ">Choose one</option>" + M.DELIVERY.map(function (o) {
         return '<option value="' + o + '"' + (state.delivery === o ? " selected" : "") + ">" + esc(M.DELIVERY_LABEL[o]) + "</option>";
       }).join("") + "</select><small>" + esc(M.SCHEDULE_NOTE) + "</small></label>" +
       '<label class="cs-hp" aria-hidden="true">Website<input name="website" tabindex="-1" autocomplete="off"></label>' +
-      '<div class="cs-nav"><button type="button" class="cs-btn" data-go="extras">Back</button><div class="cs-nav__right">' +
-      '<button type="button" class="cs-btn" id="cs-share">Copy a link to this sheet</button>' +
-      '<button type="submit" class="cs-btn cs-btn--primary" id="cs-send"' + (ok && fits ? "" : " disabled") + ">Send my cut sheet</button></div></div>" +
+      '<button type="submit" class="cs-btn cs-btn--primary cs-btn--block" id="cs-send"' + (ok && fits ? "" : " disabled") + ">Send my cut sheet</button>" +
+      '<div class="cs-linkrow"><button type="button" class="cs-link" data-go="extras">Back</button><button type="button" class="cs-link" id="cs-share">Copy a link to this sheet</button></div>' +
       '<p class="cs-fine">Sending this doesn&rsquo;t charge anything. You can change it until your due date by sending a new one. Your price is $' + e.rate.toFixed(2) +
-      " per lb of hanging weight, all in. That is about " + money(Math.round(e.total)) + " on a typical " + (state.side === "whole" ? "whole hog" : "half") +
+      " per lb of hanging weight, butcher included. That is about " + money(Math.round(e.total)) + " on a typical " + (state.side === "whole" ? "whole hog" : "half") +
       "; your final bill is that price times your hog&rsquo;s actual hanging weight.</p></form></div>";
   }
   /* What the done screen says when the receiver accepted the sheet: honest about whether the customer's copy went out. */
@@ -339,8 +388,12 @@
       "Thanks, " + first + ". We have your cut sheet, but we couldn't email your copy yet. Download it below and keep it." + refLine;
   }
   function viewDone() {
-    var s = state.sent, b = M.batch(state.batch);
+    var s = state.sent, res = isReserved(), b = res ? null : M.batch(state.batch);
     var emailed = s && s.delivered;
+    if (s && s.closed && res) {
+      return '<div class="cs-step"><h2 class="cs-steptitle">Cut sheets have closed</h2><p class="cs-stepintro">' + esc(allClosedMessage()) + "</p>" +
+        '<div class="cs-actions"><button type="button" class="cs-btn cs-btn--ghost" data-go="review">Back to my sheet</button></div></div>';
+    }
     if (s && s.closed) {
       return '<div class="cs-step"><h2 class="cs-steptitle">That date has closed</h2><p class="cs-stepintro">' + closedMessage(b) + "</p>" +
         '<div class="cs-actions"><button type="button" class="cs-btn cs-btn--primary" data-go="start">Choose another date</button>' +
@@ -350,12 +403,14 @@
     return '<div class="cs-step"><h2 class="cs-steptitle">' + (emailed ? "We have your cut sheet" : "One more step") + "</h2>" +
       '<p class="cs-stepintro">' + (emailed ? esc(doneIntro(s)) : "We couldn&rsquo;t send this automatically. Download your sheet and email it to us, or call or text Brian at " + C.phone + ".") + "</p>" +
       '<div class="cs-block"><p class="cs-blocktitle">What happens next</p><ol class="cs-timeline cs-clear">' +
-      (state.order ? "" : '<li><strong>Put your deposit down.</strong> ' + money(C.deposit[state.side]) + " holds your spot. Reserve by " + esc(M.shortDate(b.reserveBy)) + ".</li>") +
-      "<li><strong>" + esc(M.shortDate(b.due)) + ":</strong> last day to change your sheet. Send a new one any time before then.</li>" +
-      "<li><strong>" + esc(M.shortDate(b.processing)) + ":</strong> your hog goes to Timberline Meats in Dundee.</li>" +
+      (res ? "" : '<li><strong>Put your deposit down.</strong> ' + money(C.deposit[state.side]) + " holds your spot. Reserve by " + esc(M.shortDate(b.reserveBy)) + ".</li>") +
+      (res ? "<li><strong>" + esc(M.DUE_RULE.charAt(0).toUpperCase() + M.DUE_RULE.slice(1)) + ":</strong> last day to change your sheet. Send a new one any time before then.</li>" +
+        "<li><strong>On your processing date:</strong> your hog goes to Timberline Meats in Dundee.</li>" :
+        "<li><strong>" + esc(M.shortDate(b.due)) + ":</strong> last day to change your sheet. Send a new one any time before then.</li>" +
+        "<li><strong>" + esc(M.shortDate(b.processing)) + ":</strong> your hog goes to Timberline Meats in Dundee.</li>") +
       "<li><strong>Usually " + esc(M.weeksPhrase()) + " later:</strong> your pork is back at the farm and we email you the hanging weight and your total.</li>" +
       "<li><strong>We schedule your " + esc(M.DELIVERY_PLAIN[state.delivery] || "delivery or pickup") + " for the next available day.</strong> Your balance is the hanging weight times your $" + M.estimate(priced(), state.side).rate.toFixed(2) + " price, less your deposit. " + esc(M.BALANCE_NOTE) + "</li></ol>" +
-      '<div class="cs-actions">' + (state.order ? "" : '<a class="cs-btn cs-btn--primary" href="' + esc(C.reserveUrl[state.side]) + '">Reserve my ' + state.side + "</a>") +
+      '<div class="cs-actions">' + (res ? "" : '<a class="cs-btn cs-btn--primary" href="' + esc(C.reserveUrl[state.side]) + '">Reserve my ' + state.side + "</a>") +
       '<button type="button" class="cs-btn" id="cs-pdf">Download my sheet</button>' +
       (emailed ? "" : '<a class="cs-btn" href="mailto:' + C.email + "?subject=" + encodeURIComponent("Cut sheet: " + state.name) + "&body=" + body + '">Email Brian</a>') +
       '<button type="button" class="cs-btn cs-btn--ghost" data-go="review">Make a change</button></div>' +
@@ -374,10 +429,10 @@
       '<div class="cs-freezer" aria-hidden="true">' + tiles + "</div>" +
       '<ul class="cs-list">' + list + "</ul>" +
       '<div class="cs-price"><div class="cs-price__row cs-small"><span>Everything fresh</span><span>$' + e.freshRate.toFixed(2) + "/lb</span></div>" + adds +
-      '<div class="cs-price__row cs-price__total"><span>Your price</span><span>$' + e.rate.toFixed(2) + "/lb, all in</span></div>" +
+      '<div class="cs-price__row cs-price__total"><span>Your price, butcher included</span><span>$' + e.rate.toFixed(2) + "/lb</span></div>" +
       '<div class="cs-price__row cs-small"><span>' + e.hanging + " lb hanging</span><span>= about " + money(Math.round(e.total)) + "</span></div></div>" +
       '<p class="cs-fine">Estimates from hogs we&rsquo;ve weighed package by package. Your final bill is that price times your hog&rsquo;s actual hanging weight. ' +
-      (state.side === "whole" ? "Whole hogs" : "Halves") + " this year hung " + C.hangingRange[state.side][0] + " to " + C.hangingRange[state.side][1] + " lb, so about " +
+      (state.side === "whole" ? "Our whole hogs" : "Our halves") + " have hung " + C.hangingRange[state.side][0] + " to " + C.hangingRange[state.side][1] + " lb, so about " +
       money(Math.round(e.lowTotal)) + " to " + money(Math.round(e.highTotal)) + " at $" + e.rate.toFixed(2) + ".</p>";
   }
 
@@ -416,7 +471,7 @@
   }
 
   function lines() {
-    return M.describeChoices({ side: state.side, batch: state.batch, answers: state.answers, extras: state.extras, instructions: state.instructions });
+    return M.describeChoices(modelState());
   }
 
   function loadPdfLib() {
@@ -433,7 +488,7 @@
     var lib = await loadPdfLib();
     var tpl = await (await fetch(BASE + "vendor/pork-cut-sheet.pdf")).arrayBuffer();
     var d = new Date();
-    var data = M.sheetData({ side: state.side, batch: state.batch, answers: state.answers, extras: state.extras, instructions: state.instructions,
+    var data = M.sheetData({ side: state.side, batch: modelState().batch, reserved: isReserved(), answers: state.answers, extras: state.extras, instructions: state.instructions,
       order: state.order, name: state.name, phone: state.phone, today: (d.getMonth() + 1 + "").padStart(2, "0") + "/" + (d.getDate() + "").padStart(2, "0") + "/" + d.getFullYear() });
     return window.PVFSheet.fill(lib, tpl, data);
   }
@@ -459,7 +514,7 @@
     }
   }
   function shareCode() {
-    return M.encodeShare({ side: state.side, batch: state.batch, answers: state.answers, extras: state.extras, preset: state.preset,
+    return M.encodeShare({ side: state.side, batch: isReserved() ? "" : state.batch, reserved: isReserved(), answers: state.answers, extras: state.extras, preset: state.preset,
       instructions: state.instructions, delivery: state.delivery, order: state.order });
   }
   function shareUrl() {
@@ -475,7 +530,7 @@
   }
   /* The id for this sheet as it stands: the same one while nothing has changed and nothing was accepted, a new one otherwise. */
   function submissionId() {
-    var key = [shareCode(), state.name, state.email, state.phone, state.delivery].join("|");
+    var key = [shareCode(), state.reserved, state.name, state.email, state.phone, state.delivery].join("|");
     if (!state.submission || state.submission.key !== key || !state.submission.id) state.submission = { id: newSubmissionId(), key: key };
     return state.submission.id;
   }
@@ -495,15 +550,14 @@
   async function submit(form) {
     var err = document.getElementById("cs-formerr"), btn = document.getElementById("cs-send");
     var fd = new FormData(form);
-    ["name", "email", "phone", "order"].forEach(function (k) { state[k] = String(fd.get(k) || "").trim().replace(/\s+/g, " "); });
+    ["name", "email", "phone"].forEach(function (k) { state[k] = String(fd.get(k) || "").trim().replace(/\s+/g, " "); });
     state.delivery = M.DELIVERY.indexOf(String(fd.get("delivery") || "")) >= 0 ? String(fd.get("delivery")) : "";
     var problem = !state.name ? "Enter your name." : !state.phone ? "Enter your phone number." :
       !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(state.email) ? "That email address doesn't look right." :
       !state.delivery ? "Choose how you want to get your pork." : "";
     if (!problem && !M.noteFits(fitState())) problem = NOTE_LONG;
     if (problem) { err.textContent = problem; err.hidden = false; err.scrollIntoView({ block: "center", behavior: "smooth" }); return; }
-    var sb = M.batch(state.batch);
-    if (!sb || !M.batchOpen(sb, todayIso)) { go("review"); return; }
+    if (!sendable()) { go("review"); return; }
     err.hidden = true; btn.disabled = true; btn.textContent = "Sending";
     var subId = submissionId(), pageRate = M.estimate(priced(), state.side).rate;
     save();
@@ -512,8 +566,8 @@
       try {
         var pdf = await makePdf();
         var payload = JSON.stringify({
-          name: state.name, email: state.email, phone: state.phone, order: state.order, delivery: state.delivery,
-          choices: { side: state.side, batch: state.batch, answers: state.answers, extras: state.extras, instructions: state.instructions, preset: state.preset },
+          name: state.name, email: state.email, phone: state.phone, order: state.order, delivery: state.delivery, reserved: isReserved(),
+          choices: { side: state.side, batch: isReserved() ? "" : state.batch, answers: state.answers, extras: state.extras, instructions: state.instructions, preset: state.preset },
           modelVersion: C.version, rate: pageRate, submission: subId, share: shareUrl(), pdf: b64(pdf), website: fd.get("website") || "" });
         for (var attempt = 0; attempt < 2 && !delivered && !closed; attempt++) {
           var j, ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
@@ -561,7 +615,7 @@
     if (ev.target.id === "cs-newsheet") { startNew(); return; }
     if (ev.target.id === "cs-share") {
       var f = document.getElementById("cs-form");
-      if (f) { state.order = String(f.elements.order.value || "").trim().replace(/\s+/g, " "); state.delivery = f.elements.delivery.value; save(); }
+      if (f) { state.delivery = f.elements.delivery.value; save(); }
       var u = shareUrl(), btn = ev.target;
       (navigator.clipboard ? navigator.clipboard.writeText(u) : Promise.reject()).then(function () { btn.textContent = "Link copied"; }, function () { window.prompt("Copy this link", u); });
     }
@@ -578,6 +632,7 @@
       renorm();
     }
     else if (name === "batch") state.batch = el.value;
+    else if (name === "reserved") setReserved(el.value === "yes" ? "yes" : "no");
     else if (name === "preset") { state.preset = el.value; state.answers = M.applyPreset(el.value, state.cure); renorm(); }
     else if (name === "cure") { state.cure = el.value; renorm(); }
     else if (name && (name.indexOf("flavor-") === 0 || name.indexOf("form-") === 0)) {
@@ -603,9 +658,8 @@
   mount.addEventListener("input", function (ev) {
     var nm = ev.target.name;
     if (nm === "instructions") { state.instructions = ev.target.value.replace(/\s+/g, " ").trimStart(); state.noteRefused = false; save(); syncFit(); }
-    else if (nm === "name" || nm === "email" || nm === "phone" || nm === "order") {
+    else if (nm === "name" || nm === "email" || nm === "phone") {
       state[nm] = ev.target.value;
-      if (nm === "order") { state.noteRefused = false; syncFit(); }
       save();
     }
   });

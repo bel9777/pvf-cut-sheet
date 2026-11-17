@@ -5,7 +5,7 @@
    Evidence for the numbers:
    - Rates, deposits: decisions.md 2026-10-17 (Brian).
    - Add-on rates: Timberline price list effective Jan 1, 2026. Re-check each December.
-   - Pricing (owner decision 2026-11-16): one all-in price per pound of hanging weight.
+   - Pricing (owner decision 2026-11-16): one price per pound of hanging weight.
      The cheapest sheet is everything fresh (freshRate). Every smoked item adds a fixed amount
      per pound of hanging weight that depends on the cure, and links add a little more, each
      component rounded to the nearest nickel on its own so the breakdown adds up to the price.
@@ -21,7 +21,7 @@
   "use strict";
 
   var CONFIG = {
-    version: "2027-winter-4", // the receiver's copy of this file must carry the same value
+    version: "2027-winter-5", // the receiver's copy of this file must carry the same value
     endpoint: "https://script.google.com/macros/s/AKfycbwjD23x8AhwjoSm5PlU-ksgX6pW6ABgLurW87zKp1pb5aNU-_CSEdSeMRJJjFYUPPY/exec", // Google Apps Script web app URL. Empty = download and email fallback.
     phone: "585-831-0427",
     email: "brian@parkviewfamilyfarm.com",
@@ -403,10 +403,14 @@
   function closedLine() {
     return "If you reserved that date, we are using the last sheet you sent, or the standard sheet if you didn't send one.";
   }
-  /* The customer email's two sentences when no deposit order number came with the sheet. */
-  function depositUnmatched(side) {
-    return "You didn't give us a deposit order number, so this sheet isn't matched to a deposit yet. If you've already reserved, reply with your order number. " +
-      "If you haven't, your spot isn't held until your deposit is down: " + CONFIG.reserveUrl[side === "whole" ? "whole" : "half"];
+  /* The deadline rule in words: every batch's due date is a week before its processing date (a test checks it). */
+  var DUE_RULE = "one week before your processing date";
+  /* The customer email's deposit sentence. order is the deposit order number when one came with the sheet (from a link). */
+  function depositLine(side, reserved, order) {
+    var ord = cleanOrder(order);
+    if (ord) return "We will match this sheet to your deposit, order " + ord + ".";
+    if (reserved) return "We will match this sheet to your deposit by this email address. If you used a different email at the farm store, reply and tell us which.";
+    return "This sheet is not tied to a deposit yet. Your spot isn't held until your deposit is down: " + CONFIG.reserveUrl[side === "whole" ? "whole" : "half"];
   }
   /* How the timing works. No estimated dates: the customer sees only the dates they chose. */
   function timingLines() {
@@ -440,8 +444,8 @@
     return out;
   }
   function describeChoices(state) {
-    var b = batch(state.batch);
-    var out = [(state.side === "whole" ? "Whole hog" : "Half hog") + ", processing " + longDate(b.processing), ""];
+    var b = batch(state.batch), kind = state.side === "whole" ? "Whole hog" : "Half hog";
+    var out = [!b && state.reserved === true ? kind + ", reserved. Processing date on the deposit." : kind + ", processing " + longDate(b.processing), ""];
     summaryRows(state).forEach(function (r) { out.push(r.key + ": " + r.val); });
     return out;
   }
@@ -501,7 +505,7 @@
      size is not a note: it is written in the form's own "specify pound(s) per pack" blank. */
   function sheetData(state) {
     var side = state.side, n = normalize(state.answers, side), b = batch(state.batch), order = cleanOrder(state.order);
-    var notes = ["PVF " + side + ", processing " + shortDate(b.processing) + "."];
+    var notes = [b ? "PVF " + side + ", processing " + shortDate(b.processing) + "." : "PVF " + side + ", reserved."];
     if (order) notes.push("Order #" + order + ".");
     var groundPork = n.sausage_1 === "ground_pork" || (side === "whole" && n.sausage_2 === "ground_pork");
     var ex = extrasLine(state.extras), note = cleanNote(state.instructions);
@@ -524,11 +528,25 @@
       special_lines: lay.lines, special_size: lay.size, special_fits: lay.fits
     };
   }
-  /* Will the notes fit Timberline's box? state needs side, batch, answers, extras, instructions and order.
-     No date yet means no sheet yet, and the date check stops a send, so that is not a note problem. */
+  /* Will the notes fit Timberline's box? state needs side, batch, answers, extras, instructions, order and reserved.
+     The batch job later prints the real date and order number on the sheet, so a note that fits now has to keep fitting then:
+     the check runs on a copy with the order (or the stand-in 000000 when none is given yet), and a reserved sheet
+     (no date of its own) must fit with every batch's date substituted. sheetData itself never prints the stand-in.
+     No date and not reserved means no sheet yet, and the date check stops a send, so that is not a note problem. */
   function noteFits(state) {
-    if (!state || !batch(state.batch)) return true;
-    return sheetData(state).special_fits;
+    if (!state) return true;
+    var order = cleanOrder(state.order) || "000000";
+    function copy(batchId) {
+      var c = {};
+      Object.keys(state).forEach(function (k) { c[k] = state[k]; });
+      c.order = order; c.batch = batchId;
+      return c;
+    }
+    if (batch(state.batch)) return sheetData(copy(state.batch)).special_fits;
+    if (state.reserved === true) {
+      return CONFIG.batches.every(function (b) { return sheetData(copy(b.id)).special_fits; });
+    }
+    return true;
   }
 
   /* Base64 of a binary string. Browsers and Node have btoa and atob; Google Apps Script has neither, so the receiver
@@ -559,7 +577,7 @@
   /* Choices travel in the link, so a sheet can be reopened or shared without an account.
      It carries the note, delivery choice and order number; never name, email or phone. */
   function encodeShare(state) {
-    var j = { s: state.side, b: state.batch, a: state.answers, x: cleanExtras(state.extras), p: state.preset };
+    var j = { s: state.side, b: state.batch, a: state.answers, x: cleanExtras(state.extras), p: state.preset, r: state.reserved ? 1 : 0 };
     /* The note, delivery choice and order number are always written, empty or not, so a link with none of them
        clears what an older saved draft still holds. A link that leaves a key out (an old link) falls back to the draft. */
     j.n = cleanNote(state.instructions);
@@ -580,6 +598,7 @@
       if (typeof j.n === "string") out.instructions = cleanNote(j.n);
       if (j.d === "" || DELIVERY.indexOf(j.d) >= 0) out.delivery = j.d; // "" is a choice not made; anything else unknown is ignored
       if (typeof j.o === "string") out.order = cleanOrder(j.o);
+      if (j.r === 1 || j.r === 0) out.reserved = j.r === 1; // an old link has no r: reserved stays undefined
       return out;
     } catch (e) { return null; }
   }
@@ -598,6 +617,9 @@
       instructions: sh.instructions !== undefined ? cleanNote(sh.instructions) : cleanNote(sv.instructions),
       delivery: sh.delivery === "" ? "" : (DELIVERY.indexOf(sh.delivery) >= 0 ? sh.delivery : (DELIVERY.indexOf(sv.delivery) >= 0 ? sv.delivery : "")),
       order: sh.order !== undefined ? cleanOrder(sh.order) : cleanOrder(sv.order),
+      /* true or false when the link says so; a link without it (an old link) hands back the saved draft's own value untouched.
+         The page keeps "yes", "no" or "" and maps the two in app.js. */
+      reserved: sh.reserved === true || sh.reserved === false ? sh.reserved : sv.reserved,
       name: String(sv.name == null ? "" : sv.name),
       email: String(sv.email == null ? "" : sv.email),
       phone: String(sv.phone == null ? "" : sv.phone)
@@ -612,6 +634,6 @@
     ORGANS: ORGANS, DELIVERY: DELIVERY, DELIVERY_LABEL: DELIVERY_LABEL, DELIVERY_SHORT: DELIVERY_SHORT, DELIVERY_PLAIN: DELIVERY_PLAIN, SCHEDULE_NOTE: SCHEDULE_NOTE, BALANCE_NOTE: BALANCE_NOTE,
     timingLines: timingLines, whenLines: whenLines, weeksPhrase: weeksPhrase, cleanExtras: cleanExtras, cleanNote: cleanNote, todayNY: todayNY, applyShare: applyShare,
     sheetText: sheetText, textWidth: textWidth, layoutInstructions: layoutInstructions, noteFits: noteFits, presetBlurb: presetBlurb,
-    closedLine: closedLine, depositUnmatched: depositUnmatched, HELVETICA_WIDTHS: HELV
+    closedLine: closedLine, depositLine: depositLine, DUE_RULE: DUE_RULE, cleanOrder: cleanOrder, HELVETICA_WIDTHS: HELV
   };
 });
