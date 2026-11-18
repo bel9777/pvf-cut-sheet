@@ -198,3 +198,4 @@ fieldset.cs-block { border: 1px solid var(--line); }
 @media (prefers-reduced-motion: reduce) {
   #pvf-cut-sheet *, #pvf-cut-sheet *::before { animation: none !important; transition: none !important; }
 }
+#pvf-cut-sheet .cs-addon a { color: #1e1e1c; font-weight: 600; text-decoration: underline; }

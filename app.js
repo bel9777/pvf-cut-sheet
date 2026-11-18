@@ -329,6 +329,8 @@
     var i = stepIndex(id), s = STEPS[i], prev = STEPS[i - 1].id, next = STEPS[i + 1];
     var intro = id === "ground" && state.side === "whole" ? "Everything you've sent to the grind ends up here, plus the trim. A whole gets two choices, one for each half." : s.intro;
     var rows = M.ROWS.filter(function (r) { return r.step === id; }).map(rowHtml).join("");
+    var sb = C.sausageBundle;
+    if (id === "ground" && sb) rows += '<p class="cs-note cs-addon">Want more than one flavor? Add a <a href="' + esc(sb.url) + '" target="_blank" rel="noopener">' + esc(sb.name) + '</a>: ' + sb.packs + ' packs you pick from ground pork, hot dogs and four sausages, at ' + sb.discountPct + '% off our regular per-pound prices. Order it separately from our store.</p>';
     return '<div class="cs-step"><p class="cs-progress">' + (i - 1) + " of 6</p>" +
       '<h2 class="cs-steptitle">' + esc(s.title) + '</h2><p class="cs-stepintro">' + esc(intro) + "</p>" + rows +
       (id === "belly" && M.smokeNeeded(a()) ? '<p class="cs-cureline">Cured with ' + esc(M.option("smoke_style", state.cure).l.toLowerCase()) + '. <button type="button" class="cs-link" data-go="preset">change</button></p>' : "") +

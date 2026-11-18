@@ -25,6 +25,9 @@
     endpoint: "https://script.google.com/macros/s/AKfycbwjD23x8AhwjoSm5PlU-ksgX6pW6ABgLurW87zKp1pb5aNU-_CSEdSeMRJJjFYUPPY/exec", // Google Apps Script web app URL. Empty = download and email fallback.
     phone: "585-484-0799",
     email: "brian@parkviewfamilyfarm.com",
+    // The store's own bundle, offered beside a half or whole for more grind variety. Its own order, at the
+    // store's bundle price (Brian, 2026-11-17). The address keeps the product's original slug.
+    sausageBundle: { name: "Sausage Bundle", url: "https://parkviewfamilyfarm.com/store/product/ground-pork-bundle", packs: 20, discountPct: 8 },
     farmerOnSheet: "Park View Farm",
     /* What Timberline prints on each package label. Their 2026 price list shows customized logos at no extra charge. */
     packageName: "Park View Farm",
