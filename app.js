@@ -109,6 +109,8 @@
   }
   function renorm() { state.answers = M.normalize(priced(), state.side); }
   function isReserved() { return state.reserved === "yes"; }
+  /* A sheet tied to a deposit order (a link from the deposit email, a reminder or a reopened sheet): the size is the deposit's. */
+  function sizeLocked() { return !!state.order; }
   /* The state the model checks and writes from. A reserved sheet has no date of its own. */
   function modelState() {
     return { side: state.side, batch: isReserved() ? "" : state.batch, reserved: isReserved(), answers: state.answers, extras: state.extras,
@@ -277,6 +279,14 @@
       return '<label class="cs-opt"><input type="radio" name="reserved" value="' + v + '"' + (state.reserved === v ? " checked" : "") + '>' +
         '<span class="cs-opt__box"><span class="cs-opt__label">' + esc(label) + '</span><span class="cs-opt__desc">' + esc(desc) + "</span></span></label>";
     }
+    /* A sheet tied to a deposit order: the deposit already says half or whole and that they have reserved. */
+    if (sizeLocked()) {
+      return '<div class="cs-step"><h2 class="cs-steptitle">First, your hog</h2><p class="cs-stepintro">Your deposit is in.</p>' +
+        (hadDraft ? '<p class="cs-note">Picking up where you left off. <button type="button" class="cs-link" id="cs-newsheet">Start a new sheet</button></p>' : "") +
+        '<div class="cs-block" id="cs-yourhog"><p class="cs-blocktitle">' + (state.side === "whole" ? "Whole hog" : "Half hog") + ", deposit order " + esc(state.order) + "</p>" +
+        '<p class="cs-note">Your processing date is the one on your deposit. To change the size, call or text Brian at ' + esc(C.phone) + ".</p></div>" +
+        timingHtml() + navHtml(null, "preset", "Next") + "</div>";
+    }
     return '<div class="cs-step"><h2 class="cs-steptitle">First, your hog</h2><p class="cs-stepintro">Reserved or just looking, start here.</p>' +
       (hadDraft ? '<p class="cs-note">Picking up where you left off. <button type="button" class="cs-link" id="cs-newsheet">Start a new sheet</button></p>' : "") +
       '<fieldset class="cs-block"><legend>How much?</legend><div class="cs-opts">' + sideCard("half", "Half hog") + sideCard("whole", "Whole hog") + "</div></fieldset>" +
@@ -306,7 +316,10 @@
     var showCure = custom || M.smokeNeeded(M.applyPreset(state.preset));
     var nav = custom ? navHtml("start", "loin", "Start building") :
       navHtml("start", "review", "Use this package", '<button type="button" class="cs-btn" data-go="loin">Change a few things</button>');
+    var first = String(state.name || "").split(" ")[0];
     return '<div class="cs-step"><h2 class="cs-steptitle">How do you want to do this?</h2><p class="cs-stepintro">Pick one of our packages and you&rsquo;re done, or build your own cut by cut.</p>' +
+      (sizeLocked() ? '<p class="cs-note" id="cs-depositline">' + (first ? "Thanks, " + esc(first) + ". " : "") + "This sheet is for your " +
+        (state.side === "whole" ? "whole hog" : "half hog") + ", deposit order " + esc(state.order) + ".</p>" : "") +
       '<fieldset class="cs-block"><legend>Pick a package</legend><div class="cs-opts cs-opts--two">' + cards + "</div></fieldset>" +
       '<fieldset class="cs-block"><legend>Or build your own</legend><div class="cs-opts cs-opts--one">' + own + "</div></fieldset>" +
       (showCure ? '<fieldset class="cs-block"><legend>How should your smoked cuts be cured?</legend><p class="cs-note">This only matters for what you have smoked. Nothing smoked, nothing cured.</p>' +
@@ -371,7 +384,7 @@
       '<div class="cs-fields2"><label class="cs-field"><span>Your name</span><input name="name" autocomplete="name" maxlength="' + C.limits.name + '" required value="' + esc(state.name) + '"></label>' +
       '<label class="cs-field"><span>Phone</span><input name="phone" type="tel" autocomplete="tel" maxlength="40" required value="' + esc(state.phone) + '"></label></div>' +
       '<label class="cs-field"><span>Email</span><input name="email" type="email" autocomplete="email" maxlength="254" required value="' + esc(state.email) + '">' +
-      (res ? "<small>Use the email on your farm store account. That is how we find your deposit.</small>" : "") + "</label>" +
+      (res && !state.order ? "<small>Use the email on your farm store account. That is how we find your deposit.</small>" : "") + "</label>" +
       '<p class="cs-blocktitle cs-blocktitle--gap">Delivery or pickup</p><div class="cs-clear"></div>' +
       '<label class="cs-field"><span>How do you want to get your pork?</span><select name="delivery">' +
       '<option value=""' + (state.delivery ? "" : " selected") + ">Choose one</option>" + M.DELIVERY.map(function (o) {
@@ -668,8 +681,50 @@
   });
   mount.addEventListener("submit", function (ev) { ev.preventDefault(); submit(ev.target); });
 
+  /* A buyer signed in to the farm store has their name, email and phone on the store's own profile page, on this same
+     site. Read them in the buyer's browser and fill in only what is still empty. Nothing goes in any link or to anyone
+     new: these are the same three fields the buyer would type, and they leave the browser only when the buyer sends.
+     Only on the farm site (the GitHub copy has no store), or when a test asks for it. */
+  function canReadAccount() {
+    return window.PVF_PREFILL_ACCOUNT === true || /(^|\.)parkviewfamilyfarm\.com$/.test(location.hostname);
+  }
+  function fillEmptyFields() {
+    var f = document.getElementById("cs-form");
+    if (!f) return;
+    ["name", "email", "phone"].forEach(function (k) { var el = f.elements[k]; if (el && !el.value && state[k]) el.value = state[k]; });
+  }
+  function prefillFromAccount() {
+    if (!canReadAccount() || typeof fetch !== "function" || typeof DOMParser !== "function") return;
+    if (state.name && state.email && state.phone) return;
+    var ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 8000);
+    fetch("/account", { credentials: "same-origin", headers: { Accept: "text/html" }, signal: ctl ? ctl.signal : undefined })
+      .then(function (r) {
+        clearTimeout(timer);
+        var path = "";
+        try { path = new URL(r.url, location.href).pathname; } catch (e) { path = ""; }
+        return r.ok && /^\/account\/?$/.test(path) ? r.text() : null; // not signed in: the store sends them to its sign-in page instead
+      })
+      .then(function (html) {
+        if (!html) return;
+        var form = new DOMParser().parseFromString(html, "text/html").querySelector('form[action$="/account"]');
+        if (!form) return;
+        function val(n) { var el = form.querySelector('[name="' + n + '"]'); return el ? String(el.getAttribute("value") || el.value || "").trim() : ""; }
+        var name = [val("first_name"), val("last_name")].filter(Boolean).join(" ").slice(0, C.limits.name);
+        var email = val("email"), phone = val("phone"), changed = false;
+        if (!state.name && name) { state.name = name; changed = true; }
+        if (!state.email && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { state.email = email.slice(0, 254); changed = true; }
+        if (!state.phone && phone) { state.phone = phone.slice(0, 40); changed = true; }
+        if (!changed) return;
+        save();
+        if (state.step === "review") fillEmptyFields(); else render(); // never redraw the form under someone typing
+      })
+      .catch(function () { clearTimeout(timer); });
+  }
+
   restore();
   renorm();
   if (state.step === "done") state.step = "review";
   render();
+  prefillFromAccount();
 })();
