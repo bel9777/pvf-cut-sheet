@@ -23,7 +23,7 @@
   var CONFIG = {
     version: "2027-winter-5", // the receiver's copy of this file must carry the same value
     endpoint: "https://script.google.com/macros/s/AKfycbwjD23x8AhwjoSm5PlU-ksgX6pW6ABgLurW87zKp1pb5aNU-_CSEdSeMRJJjFYUPPY/exec", // Google Apps Script web app URL. Empty = download and email fallback.
-    phone: "585-831-0427",
+    phone: "585-484-0799",
     email: "brian@parkviewfamilyfarm.com",
     farmerOnSheet: "Park View Farm",
     /* What Timberline prints on each package label. Their 2026 price list shows customized logos at no extra charge. */

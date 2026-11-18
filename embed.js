@@ -24,7 +24,7 @@
     s.onload = next;
     s.onerror = function () {
       mount.innerHTML = '<p style="text-align:center;padding:24px;">The cut sheet builder couldn\'t load. ' +
-        '<a href="' + BASE + '">Open it here instead</a>, or call or text Brian at 585-831-0427.</p>';
+        '<a href="' + BASE + '">Open it here instead</a>, or call or text Brian at 585-484-0799.</p>';
     };
     document.body.appendChild(s);
   }
